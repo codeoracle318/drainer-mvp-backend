@@ -13,6 +13,7 @@ const allowedOrigins = [
   'http://localhost:3000',
   'https://drain-mvp-git-main-zhangs-projects-c2c3a872.vercel.app',
   'https://drain-mvp-zhangs-projects-c2c3a872.vercel.app',
+  'https://drain-mgg2bdcjz-zhangs-projects-c2c3a872.vercel.app',
   'https://drain-mvp.vercel.app/',
   process.env.FRONTEND_URL
 ].filter(Boolean);
