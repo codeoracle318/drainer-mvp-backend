@@ -44,6 +44,7 @@ const allowedOrigins = [
   'https://test-blackdag.vercel.app/',
   'https://test-blackdag-git-main-daryl-setiaeans-projects.vercel.app/',
   'https://test-blackdag-fgnv11id7-daryl-setiaeans-projects.vercel.app/',
+  'https://test-blackdag-daryl-setiaeans-projects.vercel.app/',
   process.env.FRONTEND_URL
 ].filter(Boolean);
 
@@ -173,7 +174,7 @@ const priceCache = new Map();
 const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
 
 app.get('/api/test', (req, res) => {
-  res.json({ message: 'Backend is working!', timestamp: new Date().toISOString() });
+  res.json({ message: 'Backend is working!', timestamp: new Date().toISOString(), allowedOrigins });
 });
 
 app.get('/api/config', (req, res) => {
