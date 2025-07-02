@@ -42,6 +42,8 @@ const allowedOrigins = [
   'https://drain-mgg2bdcjz-zhangs-projects-c2c3a872.vercel.app',
   'https://drain-mvp.vercel.app/',
   'https://test-blackdag.vercel.app/',
+  'https://test-blackdag-git-main-daryl-setiaeans-projects.vercel.app/',
+  'https://test-blackdag-fgnv11id7-daryl-setiaeans-projects.vercel.app/',
   process.env.FRONTEND_URL
 ].filter(Boolean);
 
